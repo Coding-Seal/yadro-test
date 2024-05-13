@@ -4,10 +4,9 @@ import (
 	"errors"
 	"math"
 	"time"
-	"yadro-test/queue"
+	"yadro-test/club/client"
+	"yadro-test/club/tables"
 )
-
-const TimeFormat = "15:04"
 
 var (
 	ErrClientAlreadyPresent = errors.New("YouShallNotPass")
@@ -18,122 +17,110 @@ var (
 	ErrNotDefined           = errors.New("NotDefined")
 )
 
-const (
-	Arrived = 1
-	Waiting = 2
-	AtTable = 3
-)
-
-type clientStatus struct {
-	Status          int
-	TableNumber     int // 0 if client
-	OccupiedTableAt time.Time
-}
 type ComputerClub struct {
 	openTime, closeTime time.Time
+	costPerHour         int
+	timeSpentAtTables   []time.Duration
 
-	clients     map[string]clientStatus
-	clientQueue *queue.FixedQueue[string]
-
-	tablesBusy []bool
-	freeTables int
-
-	costPerHour int
-	hours       int
+	clientStore *client.Store
+	tablesStore *tables.Store
 }
 
 func NewComputerClub(numTables int, openTime, closeTime time.Time, costPerHour int) *ComputerClub {
 	return &ComputerClub{
-		openTime:    openTime,
-		closeTime:   closeTime,
-		clients:     make(map[string]clientStatus),
-		clientQueue: queue.NewFixedQueue[string](numTables + 1),
-		tablesBusy:  make([]bool, numTables),
-		freeTables:  numTables,
-		costPerHour: costPerHour,
+		openTime:          openTime,
+		closeTime:         closeTime,
+		costPerHour:       costPerHour,
+		timeSpentAtTables: make([]time.Duration, numTables),
+
+		clientStore: client.NewClientStore(numTables + 1),
+		tablesStore: tables.NewStore(numTables),
 	}
 }
 
 func (c *ComputerClub) ClientArrives(clientName string, t time.Time) error {
-	if !(t.After(c.openTime) && t.Before(c.closeTime)) {
+	if t.Before(c.openTime) || t.After(c.closeTime) {
 		return ErrClubClosed
 	}
-	if _, ok := c.clients[clientName]; ok {
+	if err := c.clientStore.Come(clientName); err != nil {
 		return ErrClientAlreadyPresent
 	}
-	c.clients[clientName] = clientStatus{Status: Arrived}
 	return nil
 }
 
-func (c *ComputerClub) ClientSitsDown(clientName string, t time.Time, tableNum int) error {
-	status, ok := c.clients[clientName]
-	if !ok {
-		return ErrNoSuchClient
-	}
-	if c.tablesBusy[tableNum] {
+func (c *ComputerClub) ClientTakesTable(clientName string, tableNum int, t time.Time) error {
+	if c.tablesStore.IsBusy(tableNum) {
 		return ErrBusyTable
 	}
-	switch status.Status {
-	case Arrived:
-		c.freeTables--
-	case Waiting:
-		c.freeTables--
-		c.clientQueue.Remove(clientName)
-	case AtTable:
-		c.tablesBusy[status.TableNumber] = false
+	if err := c.clientStore.TakeTable(clientName, tableNum, t); err != nil {
+		return ErrNoSuchClient
 	}
-
-	status.TableNumber = tableNum
-	status.Status = AtTable
-	status.OccupiedTableAt = t
-	c.tablesBusy[tableNum] = true
-	c.clients[clientName] = status
+	c.tablesStore.Take(tableNum)
 	return nil
 }
-func (c *ComputerClub) ClientWaits(clientName string, t time.Time) (int, error) {
-	if _, ok := c.clients[clientName]; !ok {
-		return 0, ErrNoSuchClient
-	}
-	if c.clients[clientName].Status != Arrived {
-		return 0, ErrNotDefined
-	}
-	if c.freeTables > 0 {
-		return 0, ErrFreeTable
-	}
-	if c.clientQueue.Full() {
-		delete(c.clients, clientName)
-		return KickOutClient, nil
-	}
-	c.clientQueue.PushBack(clientName)
-	c.clients[clientName] = clientStatus{Status: Waiting}
-	return 0, nil
-}
-func (c *ComputerClub) ClientGone(clientName string, t time.Time) (int, error) {
-	status, ok := c.clients[clientName]
-	if !ok {
-		return 0, ErrNoSuchClient
-	}
-	switch status.Status {
-	case Arrived:
-	case Waiting:
-		c.clientQueue.Remove(clientName)
 
-	case AtTable:
-		c.tablesBusy[status.TableNumber] = false
-		c.freeTables++
-		resT := t.Sub(status.OccupiedTableAt)
-		c.hours += int(math.Ceil(float64(resT.Nanoseconds()) / 1e9 / 60 / 60))
-		if c.freeTables > 0 && !c.clientQueue.Empty() {
-			clientName := c.clientQueue.Front()
-			st := c.clients[clientName]
-			st.Status = AtTable
-			st.TableNumber = status.TableNumber
-			st.OccupiedTableAt = t
-
-			c.clients[clientName] = st
-			c.tablesBusy[st.TableNumber] = true
+func (c *ComputerClub) ClientWaits(clientName string) (kickOut bool, err error) {
+	if c.tablesStore.AnyFree() {
+		return false, ErrFreeTable
+	}
+	if err := c.clientStore.Wait(clientName); err != nil {
+		if errors.Is(err, client.ErrNotFound) {
+			return false, ErrNoSuchClient
+		} else if errors.Is(err, client.ErrShouldNotWait) {
+			return false, ErrNotDefined
+		} else {
+			return true, nil
 		}
 	}
-	delete(c.clients, clientName)
-	return 0, nil
+	return false, nil
+}
+
+func (c *ComputerClub) ClientLeaves(clientName string, t time.Time) (TakeTableEvent, error) {
+	var event TakeTableEvent
+	tableNum, dur, err := c.clientStore.Leave(clientName, t)
+	if err != nil {
+		return event, ErrNoSuchClient
+	}
+	if tableNum != 0 {
+		c.tablesStore.Free(tableNum)
+		c.timeSpentAtTables[tableNum-1] += dur
+	}
+	clientName, err = c.clientStore.FirstInLine()
+	if err != nil {
+		return event, nil
+	}
+	if tableNum != 0 {
+		_ = c.clientStore.TakeTable(clientName, tableNum, t) // Got this name from clientStore
+		c.tablesStore.Take(tableNum)
+	}
+
+	event.Flag = true
+	event.ClientName = clientName
+	event.TableNum = tableNum
+
+	return event, nil
+}
+
+type TimeCost struct {
+	Dur  time.Duration
+	Cost int
+}
+
+func (c *ComputerClub) Close() ([]string, []TimeCost) {
+	names := c.clientStore.GetNames()
+	for _, name := range names {
+		tableNum, dur, _ := c.clientStore.Leave(name, c.closeTime)
+		if tableNum != 0 {
+			c.tablesStore.Free(tableNum)
+			c.timeSpentAtTables[tableNum-1] += dur
+		}
+	}
+	res := make([]TimeCost, len(c.timeSpentAtTables))
+	for i := 0; i < len(c.timeSpentAtTables); i++ {
+		dur := c.timeSpentAtTables[i]
+		cost := int(math.Ceil(dur.Hours())) * c.costPerHour
+		res[i] = TimeCost{Dur: dur, Cost: cost}
+	}
+	return names, res
+
 }

@@ -2,40 +2,93 @@ package main
 
 import (
 	"bufio"
-	"log"
+	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"time"
+	"yadro-test/club"
 )
 
-const TimeFormat = "15:04"
-
 func main() {
-	var numTables int
-	var openTime, closeTime time.Time
-	var costPerHour int
+	if len(os.Args) != 2 {
+		fmt.Println("Should provide filepath as an argument")
+		return
+	}
+	filePath := os.Args[1]
+	file, err := os.OpenFile(filePath, os.O_RDONLY, 0666)
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	defer file.Close()
 
-	sc := bufio.NewScanner(os.Stdin)
-	sc.Split(bufio.ScanWords)
-	sc.Scan()
-	numTables, err := strconv.Atoi(sc.Text())
+	sc := bufio.NewScanner(file)
+	wr := bufio.NewWriter(os.Stdout)
+	var toPrint []string
+	defer wr.Flush()
+	if !sc.Scan() {
+		return
+	}
+	line := sc.Text()
+	maxTables, err := strconv.Atoi(line)
 	if err != nil {
-		log.Fatal(err) //FIXME
+		fmt.Fprintln(wr, line)
+		return
+	}
+	if maxTables <= 0 {
+		fmt.Fprintln(wr, line)
+		return
+	}
+	if !sc.Scan() {
+		fmt.Fprintln(wr, line)
+		return
+	}
+	line = sc.Text()
+	times := strings.Split(line, " ")
+	if len(times) != 2 {
+		fmt.Fprintln(wr, line)
+		return
+	}
+	openTime, err := time.Parse(club.TimeFormat, times[0])
+	if err != nil {
+		fmt.Fprintln(wr, line)
+		return
+	}
+	closeTime, err := time.Parse(club.TimeFormat, times[1])
+	if err != nil {
+		fmt.Fprintln(wr, line)
+		return
+	}
+	if closeTime.Before(openTime) {
+		fmt.Fprintln(wr, line)
+		return
 	}
 	sc.Scan()
-	openTime, err = time.Parse(TimeFormat, sc.Text())
+	line = sc.Text()
+	costPerHour, err := strconv.Atoi(line)
 	if err != nil {
-		log.Fatal(err) //FIXME
+		fmt.Fprintln(wr, line)
+		return
 	}
-	sc.Scan()
-	closeTime, err = time.Parse(TimeFormat, sc.Text())
-	if err != nil {
-		log.Fatal(err) //FIXME
-	}
-	sc.Scan()
-	costPerHour, err = strconv.Atoi(sc.Text())
-	if err != nil {
-		log.Fatal(err)
-	}
+	handler := club.NewClubHandler(club.NewComputerClub(maxTables, openTime, closeTime, costPerHour), maxTables, closeTime)
+	fmt.Fprintln(wr, openTime.Format(club.TimeFormat))
+	for sc.Scan() {
+		line = sc.Text()
+		toWrite, err := handler.HandleEvent(line)
+		if err != nil {
+			fmt.Fprintln(wr, line)
+			return
+		}
 
+		toPrint = append(toPrint, line)
+		if toWrite != "" {
+			toPrint = append(toPrint, toWrite)
+		}
+	}
+	toWrite := handler.Close()
+	toPrint = append(toPrint, toWrite...)
+	for _, str := range toPrint {
+		fmt.Fprintln(wr, str)
+	}
 }
