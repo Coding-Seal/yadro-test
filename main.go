@@ -72,7 +72,7 @@ func main() {
 		return
 	}
 	handler := club.NewClubHandler(club.NewComputerClub(maxTables, openTime, closeTime, costPerHour), maxTables, closeTime)
-	fmt.Fprintln(wr, openTime.Format(club.TimeFormat))
+	toPrint = append(toPrint, openTime.Format(club.TimeFormat))
 	for sc.Scan() {
 		line = sc.Text()
 		toWrite, err := handler.HandleEvent(line)
