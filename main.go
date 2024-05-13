@@ -36,7 +36,7 @@ func main() {
 		fmt.Fprintln(wr, line)
 		return
 	}
-	if maxTables <= 0 {
+	if club.ValidateMaxTableNumber(maxTables) {
 		fmt.Fprintln(wr, line)
 		return
 	}

@@ -11,7 +11,7 @@ const (
 	atTable = 3
 )
 
-type status struct { // FIXME
+type status struct {
 	Status          int
 	TableNumber     int // 0 if client
 	OccupiedTableAt time.Time
